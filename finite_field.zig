@@ -8,8 +8,6 @@ pub fn BinaryFiniteField(comptime n: comptime_int) type {
         order: u8 = undefined,
         divisor: u8 = undefined,
 
-        pub const Vec = @Vector(n, u8);
-
         pub const ValueError = error{
             InvalidExponentError,
             InvalidNumberError,
@@ -22,7 +20,7 @@ pub fn BinaryFiniteField(comptime n: comptime_int) type {
         pub fn init() ValueError!Self {
             var d: u8 = undefined;
 
-            // Irreducible polynomail for mod multiplication
+            // Irreducible polynomial for mod multiplication
             d = switch (n) {
                 1 => 3, // 1 + x ? undef  shift(0b11)=2
                 2 => 7, // 1 + x + x^2    shift(0b111)=3

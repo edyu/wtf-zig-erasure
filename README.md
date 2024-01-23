@@ -117,7 +117,7 @@ What's even cooler is that because `-1 = 1 mod 2` (try going counter-clockwise o
 
 Ok, that's probably too much maths already. Let's go back to the [code example](https://github.com/edyu/wtf-zig-erasure).
 
-The [first code](https://github.com/edyu/wtf-zig.erasure/matrix.zig) I want to describe is an implementation of `m x n` matrix where `m` is the number of rows and `n` is the number of columns.
+The [first code](https://github.com/edyu/wtf-zig-erasure/matrix.zig) I want to describe is an implementation of `m x n` matrix where `m` is the number of rows and `n` is the number of columns.
 
 I decided to use *type function* to return the matrix type because I wanted to make sure the compiler can enforce that a `3 x 2` matrix is different from a `2 x 3` matrix.
 
@@ -153,7 +153,9 @@ In the end, not only I ended up not needing such flexibiltiy, but it made my cod
                                 -- Donald Knuth
 
 
-One artifact of such complication is that `getSlice()` returns a vector based on whether it's row-major or colume-major but the caller will need to keep track of that.
+One artifact of such *complication* is that `getSlice()` returns a vector based on whether the matrix is stored internally in row-major or colume-major.
+The burden is on the caller to keep track of of the `DataOrder` because the caller is the one that initialized the matrix.
+Of course, `getRow()` and `getCol()` are exposed and preferred.
 
 ```zig
         // return eithers a row or a column based on matrix data order
@@ -175,6 +177,7 @@ One artifact of such complication is that `getSlice()` returns a vector based on
 ```
 
 The reverse `setSlice()` has similar logic and in the end, I'm not sure whether the *optimization* is ever needed.
+Once again, it's probably better to not go through such complication and just expose `setRow()` and `setCol()` instead.
 
 ```zig
         fn setSlice(self: *Self, rc: usize, new_rc: []const u8) void {
@@ -193,16 +196,197 @@ The reverse `setSlice()` has similar logic and in the end, I'm not sure whether 
         }
 ```
 
+## Code: finite_field.zig
 
-[binary fields](https://www.doc.ic.ac.uk/~mrh/330tutor/ch04s04.html). 
-[finite field arithmetic](https://en.wikipedia.org/wiki/Finite_field_arithmetic)
-[Erasure Coding](https://en.wikipedia.org/wiki/Erasure_code) 
-[Erasure Coding For The Masses](https://towardsdatascience.com/erasure-coding-for-the-masses-2c23c74bf87e) 
-[Dr. Vishesh Khemani](https://vishesh-khemani.medium.com/).
+Finally, we can look at the [code](https://github.com/edyu/wtf-zig-erasure/finite_field.zig) for [binary fields](https://www.doc.ic.ac.uk/~mrh/330tutor/ch04s04.html).
+The [finite_field.zig](https://github.com/edyu/wtf-zig-erasure/finite_field.zig) exposes the n of finite field p^n^ as `n` using `comptime`: 
+Because we only care about [binary finite fields](https://www.doc.ic.ac.uk/~mrh/330tutor/ch04s04.html), `p` is always 2 and doesn't needed to specifically passed in.
+
+```zig
+    pub fn BinaryFiniteField(comptime n: comptime_int) type {
+        return struct {
+            exp: u8 = undefined,
+            order: u8 = undefined,
+            divisor: u8 = undefined,
+            // more code
+        }
+    }
+```
+
+The `init()` method mostly initializes the 3 numbers needed later.
+The `exp` is just the `n` passed in.
+Note that because of the use case and my lack of advanced mathematics knowledge, I only care about `n >= 1 and n <= 7`. 
+This also made it easier for calculating the `order` because `u8` is enough to left shift 1 based on the `n`. 
+The `divisor` are primes that are results of using 2 as `x` in the comments.
+Leave in the comments if you know the maths and want to explain to other readers why that's the case.
+
+```zig
+        pub fn init() ValueError!Self {
+            var d: u8 = undefined;
+
+            // Irreducible polynomial for mod multiplication
+            d = switch (n) {
+                1 => 3, // 1 + x ? undef  shift(0b11)=2
+                2 => 7, // 1 + x + x^2    shift(0b111)=3
+                3 => 11, // 1 + x + x^3   shift(0b1011)=4
+                4 => 19, // 1 + x + x^4   shift(0b10011)=5
+                5 => 37, // 1 + x^2 + x^5 shift(0b100101)=6
+                6 => 67, // 1 + x + x^6   shift(0b1000011)=7
+                7 => 131, // 1 + x + x^7  shift(0b10000011)=8
+                else => return ValueError.InvalidExponentError,
+            };
+
+            return .{
+                .exp = @intCast(n),
+                .divisor = d,
+                .order = @as(u8, 1) << @intCast(n),
+            };
+        }
+```
+
+The number `order` is the 1 + the maximum allowed number in the fields.
+For example, for `n = 3`, the field cannot contain any number `> 10`. 
+
+```zig
+        pub fn validated(self: *const Self, a: usize) ValueError!u8 {
+            if (a < self.order) {
+                return @intCast(a);
+            } else {
+                return ValueError.InvalidNumberError;
+            }
+        }
+```
+
+## Addition and Subtraction
+
+Recall that for [binary fields](https://www.doc.ic.ac.uk/~mrh/330tutor/ch04s04.html), addition is just `exclusive OR`. 
+
+```zig
+        pub fn add(self: *const Self, a: usize, b: usize) ValueError!u8 {
+            return try self.validated((try self.validated(a)) ^ (try self.validated(b)));
+        }
+```
+
+Also, negation is simply the number itself and subtraction is just addition of the negation.
+
+```zig
+        pub fn neg(self: *const Self, a: usize) ValueError!u8 {
+            return try self.validated(a);
+        }
+
+        pub fn sub(self: *const Self, a: usize, b: usize) ValueError!u8 {
+            return try self.add(a, try self.neg(b));
+        }
+```
+
+## Multiplication
+
+Multiplication is probably the most complicated of all the methods except in the case of `n = 1`. 
+
+```zig
+        pub fn mul(self: *const Self, a: usize, b: usize) ValueError!u8 {
+            if (self.exp == 1) {
+                return self.validated(try self.validated(a) * try self.validated(b));
+            }
+
+            // n > 1
+            const x = try self.validated(a);
+            const y = try self.validated(b);
+            var result: u16 = 0;
+            for (0..8) |i| {
+                const j = 7 - i;
+                if (((y >> @intCast(j)) & 1) == 1) {
+                    result ^= @as(u16, x) << @intCast(j);
+                }
+            }
+            while (result >= self.order) {
+                // count how many binary digits result has
+                var j = countBits(result);
+                j -= self.exp + 1;
+                result ^= @as(u16, self.divisor) << @intCast(j);
+            }
+            return try self.validated(result);
+        }
+```
+It requires a function to count the number of binary digits of a number.
+There is probably a much better way to figure this out in **Zig** but since I don't know, I just implemented a naive solution.
+Leave a comment if you know a better way.
+
+```zig
+        fn countBits(num: usize) u8 {
+            var v = num;
+            var c: u8 = 0;
+            while (v != 0) {
+                v >>= 1;
+                c += 1;
+            }
+            return c;
+        }
+```
+
+## Division
+
+Division is simply the multiplication of the inverse.
+
+```zig
+        pub fn div(self: *const Self, a: usize, b: usize) ValueError!u8 {
+            return try self.mul(a, try self.invert(b));
+        }
+```
+
+However, finding the inverse of a number is more complicated than negation.
+We do have to check whether the number is 0 first, hence no inverse.
+We then find the inverse using brute force by trying every number within the `order` to see whether the result is 1 because `b` is the inverse of `a` if and only if `a * b == 1`.
+Once again, if you have a better way, leave a comment.
+
+```zig
+        pub fn invert(self: *const Self, a: usize) ValueError!u8 {
+            if (try self.validated(a) == 0) {
+                return ValueError.NoInverseError;
+            }
+            for (0..self.order) |b| {
+                if (try self.mul(a, b) == 1) {
+                    return try self.validated(b);
+                }
+            }
+            return ValueError.NoInverseError;
+        }
+```
+
+## Matrix Representation
+
+The final 3 methods are used to find the `n x n` matrix representation for a number in the field.   
+This is also the primary reason why we had to implement a [matrix](https://github.com/edyu/wtf-zig-erasure/matrix.zig).
+The main idea is to separate the number into its basis based on the polynormials mentioned in the comments of `init()`.
+
+```zig
+        fn setCol(m: *mat.Matrix(n, n), c: usize, a: u8) void {
+            for (0..n) |r| {
+                const v = (a >> @intCast(r)) & 1;
+                m.set(r, c, v);
+            }
+        }
+
+        fn setAllCols(self: *const Self, m: *mat.Matrix(n, n), a: usize) !void {
+            var basis: u8 = 1;
+            for (0..n) |c| {
+                const p = try self.mul(a, basis);
+                basis <<= 1;
+                setCol(m, c, p);
+            }
+        }
+
+        // n x n binary matrix representation
+        pub fn toMatrix(self: *const Self, allocator: std.mem.Allocator, a: usize) !mat.Matrix(n, n) {
+            var m = try mat.Matrix(n, n).init(allocator, mat.DataOrder.row);
+            try self.setAllCols(&m, a);
+            return m;
+        }
+```
 
 ## Bonus
 
-By adding a function called `format`, it makes it much easier to print out the matrix in debugging calls such as `std.debug.print` because **Zig** would implicitly check whether such method exists for the `struct` and use it to format the output. 
+By adding a function called `format` to [matrix.zig](https://github.com/edyu/wtf-zig-erasure/matrix.zig), it's much easier to print out the matrix in debugging calls such as `std.debug.print` because **Zig** would implicitly check whether such method exists for the `struct` and use it to format the output. 
 As such I can just call `std.debug.print("{}", mat)` if `mat` is of type `Matrix(m, n)`.
 
 ```zig
@@ -239,8 +423,5 @@ The inspiration of the code is from [Erasure Coding For The Masses](https://towa
 You can find the code for the article [here](https://github.com/edyu/wtf-zig-erasure).
 
 The full erasure coding code is [here](https://github.com/edyu/zig-erasure).
-
-[Erasure Coding](https://en.wikipedia.org/wiki/Erasure_code) 
-[Erasure Coding For The Masses](https://towardsdatascience.com/erasure-coding-for-the-masses-2c23c74bf87e) 
 
 ## ![Zig Logo](https://ziglang.org/zero.svg)
