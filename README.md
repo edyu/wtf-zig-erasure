@@ -28,7 +28,7 @@ Due to the length of the code example, I'll explain the code in a series of arti
 
 I gave an overview of **Zig** `comptime` in [WTF Zig Comptime](https://zig.news/edyu/wtf-is-zig-comptime-and-inline-257b). In short, `comptime` is a way to designate either a variable or a piece of code such as a block or a function as something to be run at compile time as opposed to runtime.
 
-The first benefit of running a these `comptime` code at `comptime` is so that the results of `comptime` are essentially constants that can be used directly by the compiled program. As a result, `comptime` do not use runtime resources for these any results.
+The first benefit of running a these `comptime` code at `comptime` is so that the results of `comptime` are essentially constants that can be used directly by the compiled program. As a result, `comptime` does not use runtime resources for these any results.
 
 One example is the same `factorial` code I showed in [WTF Zig Comptime](https://zig.news/edyu/wtf-is-zig-comptime-and-inline-257b). In such a case, even if I pass in a large number *n*, which takes a long time to calculate at `comptime`, during runtime it's just another constant.
 
@@ -48,7 +48,7 @@ const v = comptime factorial(120);
 
 The other benefit is actually due to necessity of metaprogramming. One of the primary reasons to use metaprogramming is to allow for different behaviors for different types.
 
-Because you have to know precisely how much memory to allocate at compile time, **Zig** types must be complete at compile type. What it means is that if you want to a *type function* (once again, see [WTF Zig Comptime](https://zig.news/edyu/wtf-is-zig-comptime-and-inline-257b)) to create different types based on some variable you pass, that variable must be comptime.
+Because you have to know precisely how much memory to allocate at compile time, **Zig** types must be complete at compile type. What it means is that if you want to use a *type function* (once again, see [WTF Zig Comptime](https://zig.news/edyu/wtf-is-zig-comptime-and-inline-257b)) to create different types based on some variable you pass, that variable must be comptime.
 
 One example is say you want to create a matrix type and that a matrix type of *3 x 3* should be completely separate from a matrix type of *4 x 4* in that you cannot simply treat them in the same way. However, you do want to use the same *type function* to create both matrices, then you must declare the *n* in *n x n* matrix as a `comptime` variable that you pass in.
 
